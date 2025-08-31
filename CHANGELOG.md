@@ -8,8 +8,6 @@
 - Expense data viewer (expenses/payments split)
 - Category editor with persistent `categories.json`
 - Pie chart of expenses by category
-- SQLite DB with idempotent (delta) ingestion + file-hash guard
-
 
 ## [v0.2.0] — 2025-08-31
 ### Added
