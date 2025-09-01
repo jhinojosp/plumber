@@ -222,6 +222,32 @@ def load_all_transactions() -> pd.DataFrame:
         df["Fecha de Compra"] = pd.to_datetime(df["Fecha de Compra"])
     return df
 
+def update_db_category_for_triple(fecha_ts, descripcion, importe, new_category) -> int:
+    """Update DB category for the exact (date, normalized description, amount) triple."""
+    fecha_iso = pd.to_datetime(fecha_ts).strftime("%Y-%m-%d")
+    norm_desc = str(descripcion).strip().lower()
+    amt = float(importe)
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE transactions
+        SET category = ?
+        WHERE fecha = ?
+          AND LOWER(TRIM(descripcion)) = ?
+          AND ROUND(importe, 2) = ROUND(?, 2)
+    """, (new_category, fecha_iso, norm_desc, amt))
+    changed = cur.rowcount
+    con.commit()
+    con.close()
+    return changed
+
+def get_db_split():
+    """Load all data from DB and return debits/credits split."""
+    df = load_all_transactions()
+    debits_df = df[df["Importe"] > 0].copy()
+    credits_df = df[df["Importe"] <= 0].copy()
+    return debits_df, credits_df
+
 # -----------------------------------------------------------------
 
 def add_keyword_to_category(category, keyword):
@@ -233,102 +259,211 @@ def add_keyword_to_category(category, keyword):
 
 def main():
     st.title("plumber")
-
-    # ensure db exists
     init_db()
-
-    # show summary at the top
     db_summary()
 
+    # --- CSV -> DB importer (one-shot), views always read from DB
+    with st.expander("Import CSV into database", expanded=False):
+        uploaded_file = st.file_uploader("Upload CSV file", type=["CSV"], key="uploader")
+        if uploaded_file is not None:
+            file_bytes = uploaded_file.getvalue()
+            fhash = file_sha256(file_bytes)
+            fname = getattr(uploaded_file, "name", "uploaded.csv")
 
-    uploaded_file = st.file_uploader("Upload CSV file", type=["CSV"])
+            if is_already_imported(fhash):
+                st.info(f"File already imported: {fname}. No rows added.")
+            else:
+                df = load_transactions(uploaded_file)
+                if df is not None:
+                    inserted, skipped = persist_transactions(df, fname)
+                    record_import(fname, fhash)
+                    st.success(f"Saved to database — Inserted: {inserted}, Skipped (duplicates): {skipped}")
+                    st.rerun()  # refresh UI from DB
 
-    if uploaded_file is not None:
+    # --- Always read from DB for everything below ---
+    debits_df, credits_df = get_db_split()
+    st.session_state.debits_df = debits_df.copy()
 
-        # compute hash of the raw bytes to detect exact re-uploads
-        file_bytes = uploaded_file.getvalue()
-        fhash = file_sha256(file_bytes)
-        fname = getattr(uploaded_file, "name", "uploaded.csv")
+    tab1, tab2, tab3 = st.tabs(["Expenses (DB)", "Payments (DB)", "History (DB)"])
 
-        if is_already_imported(fhash):
-            st.info(f"File already imported: {fname}. No rows added.")
-            # OPTIONAL: still show your current DB summary or skip the rest.
-            return
-
-        df = load_transactions(uploaded_file)
-
-        if df is not None:
+    with tab1:
+        st.subheader("Your expenses (from database)")
+        if st.session_state.debits_df.empty:
+            st.info("No expenses in the database yet. Upload a CSV to get started.")
+        else:
             
-            # persist to DB (use uploaded file name as source id)
-            inserted, skipped = persist_transactions(df, getattr(uploaded_file, "name", "uploaded.csv"))
-            record_import(fname, fhash)
-            st.success(f"Saved to database — Inserted: {inserted}, Skipped (duplicates): {skipped}")
+            # --- Monthly expenses by category (stacked LTM) ---
+            st.divider()
+            st.subheader("Monthly expenses by category")
 
+            exp = st.session_state.debits_df.copy()
+            if exp.empty:
+                st.info("No expenses in the database yet.")
+            else:
+                # ensure types + only expenses
+                exp["Fecha"] = pd.to_datetime(exp["Fecha"])
+                exp = exp[exp["Importe"] > 0]
 
-            debits_df = df[df["Importe"] > 0].copy()
-            credits_df = df[df["Importe"] <= 0].copy()
+                # defaults = latest month in data
+                latest = exp["Fecha"].max()
+                default_year, default_month = int(latest.year), int(latest.month)
+
+                years = sorted(exp["Fecha"].dt.year.unique().tolist())
+                MONTH_NAMES = ["", "January","February","March","April","May","June",
+                            "July","August","September","October","November","December"]
+
+                c1, c2 = st.columns(2)
+                sel_year = c1.selectbox("Year (anchor)", years,
+                                        index=years.index(default_year),
+                                        key="ltm_year_cat")
+                def_month_idx = (default_month - 1) if sel_year == default_year else 11
+                sel_month = c2.selectbox("Month (anchor)", list(range(1, 13)),
+                                        index=max(0, min(def_month_idx, 11)),
+                                        format_func=lambda m: MONTH_NAMES[m],
+                                        key="ltm_month_cat")
+
+                # LTM window (12 months ending at selected month)
+                period_end = pd.Period(f"{sel_year}-{sel_month:02d}", freq="M")
+                period_start = period_end - 11
+                start_ts = period_start.to_timestamp(how="start")
+                end_ts = period_end.to_timestamp(how="end")
+
+                ltm = exp[(exp["Fecha"] >= start_ts) & (exp["Fecha"] <= end_ts)].copy()
+                ltm["YM"] = ltm["Fecha"].dt.to_period("M")
+
+                # build full month x category grid so missing combos show as 0
+                months_idx = pd.period_range(start=period_start, end=period_end, freq="M")
+                cats_from_data = sorted(ltm["Category"].dropna().unique().tolist())
+                cats_from_cfg = list(st.session_state.categories.keys())
+                cats = sorted(set(cats_from_data).union(cats_from_cfg))
+
+                grid = pd.MultiIndex.from_product([months_idx, cats], names=["YM", "Category"]).to_frame(index=False)
+
+                sums = ltm.groupby(["YM", "Category"], dropna=False)["Importe"].sum().reset_index()
+                sums["Category"] = sums["Category"].fillna("Uncategorized")
+
+                data = grid.merge(sums, on=["YM", "Category"], how="left").fillna({"Importe": 0})
+                data["Month"] = data["YM"].dt.to_timestamp()
+
+                # KPI
+                ltm_total = float(data["Importe"].sum())
+                st.metric(
+                    f"LTM total ({MONTH_NAMES[period_start.month]} {period_start.year} → {MONTH_NAMES[period_end.month]} {period_end.year})",
+                    f"{ltm_total:,.2f}"
+                )
+
+                ltm_avg = float(ltm.groupby(["YM"], dropna=False)["Importe"].sum().mean())
+                st.metric(
+                    f"LTM average ({MONTH_NAMES[period_start.month]} {period_start.year} → {MONTH_NAMES[period_end.month]} {period_end.year})",
+                    f"{ltm_avg:,.2f}"
+                )
+
+                # stacked bar by category
+                fig_ltm_cat = px.bar(
+                    data,
+                    x="Month",
+                    y="Importe",
+                    color="Category",
+                    barmode="stack",
+                    title=f"Monthly expenses by category (LTM ending {MONTH_NAMES[period_end.month]} {period_end.year})",
+                )
+                st.plotly_chart(fig_ltm_cat, use_container_width=True)
+
+                # optional: table view (months as rows, categories as columns)
+                pivot = (data.pivot_table(index="Month", columns="Category", values="Importe", aggfunc="sum")
+                            .fillna(0)
+                            .sort_index(ascending=True))
+                pivot["Total"] = pivot.sum(axis=1)
+                st.dataframe(pivot, use_container_width=True)
+ 
             
-            st.session_state.debits_df = debits_df.copy()
+            new_category = st.text_input("New category name")
+            add_button = st.button("Add category")
+            if add_button and new_category:
+                if new_category not in st.session_state.categories:
+                    st.session_state.categories[new_category] = []
+                    save_categories()
+                    st.rerun()
 
-            tab1, tab2 = st.tabs(["Expenses", "Payments"])
-            with tab1:
-                new_category = st.text_input("New category name")
-                add_button = st.button("Add category")
+            edited_df = st.data_editor(
+                st.session_state.debits_df[["Fecha", "Descripción", "Importe", "Category"]],
+                column_config={
+                    "Fecha": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "Importe": st.column_config.NumberColumn("Amount", format="%0.2f"),
+                    "Category": st.column_config.SelectboxColumn(
+                        "Category", options=list(st.session_state.categories.keys())
+                    )
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="category_editor_db"  # new key to avoid clashes
+            )
 
-                if add_button and new_category:
-                    if new_category not in st.session_state.categories:
-                        st.session_state.categories[new_category] = []
-                        save_categories()
-                        st.rerun()
-                st.subheader("Your expenses")
-                edited_df = st.data_editor(
-                    st.session_state.debits_df[["Fecha", "Descripción", "Importe", "Category"]],
-                    column_config={
-                        "Fecha": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-                        "Importe": st.column_config.NumberColumn("Amount", format="%0.2f"),
-                        "Category": st.column_config.SelectboxColumn(
-                            "Category", options=list(st.session_state.categories.keys())
-                        )
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key="category_editor"
-                )
+            save_button = st.button("Apply changes to DB", type="primary")
+            if save_button:
+                changes, db_updated = 0, 0
+                for idx, row in edited_df.iterrows():
+                    new_cat = row["Category"]
+                    if new_cat == st.session_state.debits_df.at[idx, "Category"]:
+                        continue
+                    # update session copy
+                    st.session_state.debits_df.at[idx, "Category"] = new_cat
+                    # persist future auto-categorization rule
+                    description = row["Descripción"]
+                    add_keyword_to_category(new_cat, description)
+                    # persist this exact occurrence in DB
+                    db_updated += update_db_category_for_triple(
+                        row["Fecha"], description, row["Importe"], new_cat
+                    )
+                    changes += 1
+                save_categories()
+                st.success(f"Applied {changes} change(s). DB rows updated: {db_updated}.")
+                st.rerun()  # refresh charts/tables from DB
 
-                save_button = st.button("Apply changes", type="primary")
-                if save_button:
-                    for idx, row in edited_df.iterrows():
-                        new_category = row["Category"]
-                        if new_category == st.session_state.debits_df.at[idx, "Category"]:
-                            continue
-                        description = row["Descripción"]
-                        st.session_state.debits_df.at[idx, "Category"] = new_category
-                        add_keyword_to_category(new_category, description)
-                st.subheader("Expense summary")
-                category_totals = st.session_state.debits_df.groupby("Category")["Importe"].sum().reset_index()
-                category_totals = category_totals.sort_values("Importe", ascending=False)
+        st.subheader("Expense summary (DB)")
+        if not st.session_state.debits_df.empty:
+            category_totals = (st.session_state.debits_df.groupby("Category")["Importe"]
+                               .sum().reset_index().sort_values("Importe", ascending=False))
+            st.dataframe(
+                category_totals,
+                column_config={"Importe": st.column_config.NumberColumn("Amount", format="accounting")},
+                use_container_width=True,
+                hide_index=True
+            )
+            st.plotly_chart(
+                px.pie(category_totals, values="Importe", names="Category", title="Expenses by Category"),
+                use_container_width=True
+            )
 
-                st.dataframe(
-                    category_totals,
-                    column_config={
-                        "Importe": st.column_config.NumberColumn("Amount", format="accounting")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
+    with tab2:
+        st.subheader("Total payments (from database)")
+        if credits_df.empty:
+            st.info("No payments found yet.")
+        else:
+            total_payments = credits_df["Importe"].sum()
+            st.metric("Total payments", f"{total_payments:,.2f}")
+            st.dataframe(credits_df, use_container_width=True, hide_index=True)
 
-                fig = px.pie(
-                    category_totals,    
-                    values="Importe",
-                    names="Category",
-                    title="Expenses by Category"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            with tab2:
-                st.subheader("Total payments")
-                total_payments = credits_df["Importe"].sum()
-                st.metric("Total payments", f"{total_payments:,.2f}")
-                st.write(credits_df)
+    with tab3:
+        st.subheader("All-time (from database)")
+        hist_df = load_all_transactions()
+        if hist_df.empty:
+            st.info("Database is empty.")
+        else:
+            all_exp = hist_df[hist_df["Importe"] > 0].copy()
+            totals = (all_exp.groupby("Category")["Importe"]
+                      .sum().reset_index().sort_values("Importe", ascending=False))
+            st.dataframe(
+                totals,
+                column_config={"Importe": st.column_config.NumberColumn("Amount", format="accounting")},
+                use_container_width=True,
+                hide_index=True
+            )
+            st.plotly_chart(
+                px.pie(totals, values="Importe", names="Category", title="All-time expenses by Category"),
+                use_container_width=True
+            )
+            st.caption("Recent 100 transactions")
+            st.dataframe(hist_df.head(100), use_container_width=True, hide_index=True)
 
 main()
