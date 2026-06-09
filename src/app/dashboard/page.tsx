@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+
 import {
   Card,
   CardContent,
@@ -5,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { createClient } from "@/lib/supabase/server";
 
 const metrics = [
   {
@@ -25,7 +28,17 @@ const metrics = [
   },
 ];
 
-export default function DashboardPage() {
+export default async function DashboardPage() {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
   return (
     <main className="min-h-screen bg-muted/30">
       <div className="mx-auto max-w-6xl px-6 py-10">
@@ -37,8 +50,8 @@ export default function DashboardPage() {
             Dashboard
           </h1>
           <p className="mt-2 text-muted-foreground">
-            Initial financial overview. Data will connect to Supabase in the
-            next sprints.
+            Signed in as {user.email}. Initial financial overview. Data will
+            connect to Supabase in the next sprints.
           </p>
         </div>
 

@@ -11,7 +11,16 @@ import {
 } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
 
-export default function LoginPage() {
+type LoginPageProps = {
+  searchParams: Promise<{
+    error?: string;
+  }>;
+};
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const params = await searchParams;
+  const errorMessage = params.error;
+
   async function login(formData: FormData) {
     "use server";
 
@@ -26,7 +35,7 @@ export default function LoginPage() {
     });
 
     if (error) {
-      redirect("/login?error=Could not authenticate user");
+      redirect(`/login?error=${encodeURIComponent(error.message)}`);
     }
 
     redirect("/dashboard");
@@ -40,6 +49,12 @@ export default function LoginPage() {
           <CardDescription>Access your Plumber dashboard.</CardDescription>
         </CardHeader>
         <CardContent>
+          {errorMessage ? (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          ) : null}
+
           <form action={login} className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="email">
