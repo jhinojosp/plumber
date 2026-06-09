@@ -1,3 +1,11 @@
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+
 const metrics = [
   {
     label: "Monthly income",
@@ -19,16 +27,16 @@ const metrics = [
 
 export default function DashboardPage() {
   return (
-    <main className="min-h-screen bg-slate-50">
+    <main className="min-h-screen bg-muted/30">
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="mb-10">
-          <p className="text-sm font-medium uppercase tracking-[0.25em] text-slate-500">
+          <p className="text-sm font-medium uppercase tracking-[0.25em] text-muted-foreground">
             Plumber
           </p>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight">
             Dashboard
           </h1>
-          <p className="mt-2 text-slate-600">
+          <p className="mt-2 text-muted-foreground">
             Initial financial overview. Data will connect to Supabase in the
             next sprints.
           </p>
@@ -36,27 +44,26 @@ export default function DashboardPage() {
 
         <section className="grid gap-4 md:grid-cols-4">
           {metrics.map((metric) => (
-            <div
-              key={metric.label}
-              className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <p className="text-sm text-slate-500">{metric.label}</p>
-              <p className="mt-3 text-2xl font-semibold text-slate-950">
-                {metric.value}
-              </p>
-            </div>
+            <Card key={metric.label}>
+              <CardHeader className="pb-2">
+                <CardDescription>{metric.label}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-semibold">{metric.value}</p>
+              </CardContent>
+            </Card>
           ))}
         </section>
 
-        <section className="mt-8 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-950">
-            Recent transactions
-          </h2>
-          <p className="mt-2 text-sm text-slate-500">
-            No transactions yet. This table will be connected after we create
-            the database schema.
-          </p>
-        </section>
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>Recent transactions</CardTitle>
+            <CardDescription>
+              No transactions yet. This table will be connected after we create
+              the database schema.
+            </CardDescription>
+          </CardHeader>
+        </Card>
       </div>
     </main>
   );
