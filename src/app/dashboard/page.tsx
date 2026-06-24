@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { NetWorthChart } from "@/components/dashboard/net-worth-chart";
+
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -154,6 +156,65 @@ export default async function DashboardPage() {
       return total + fallbackBalance;
     }, 0) ?? 0;
 
+  const accountTypeById = new Map(
+    (accounts ?? []).map((account) => [account.id, account.type])
+  );
+
+  const snapshotsAscending = [...(balanceSnapshots ?? [])].sort((a, b) => {
+    const dateComparison = a.date.localeCompare(b.date);
+
+    if (dateComparison !== 0) {
+      return dateComparison;
+    }
+
+    return String(a.created_at).localeCompare(String(b.created_at));
+  });
+
+  const historicalBalances = new Map<string, number>();
+  const snapshotsByDate = new Map<
+    string,
+    typeof snapshotsAscending
+  >();
+
+  for (const snapshot of snapshotsAscending) {
+    const existing = snapshotsByDate.get(snapshot.date) ?? [];
+    existing.push(snapshot);
+    snapshotsByDate.set(snapshot.date, existing);
+  }
+
+  const netWorthHistory = Array.from(snapshotsByDate.entries()).map(
+    ([date, dailySnapshots]) => {
+      for (const snapshot of dailySnapshots) {
+        historicalBalances.set(
+          snapshot.account_id,
+          Number(snapshot.balance)
+        );
+      }
+
+      let assets = 0;
+      let liabilities = 0;
+
+      for (const [accountId, balance] of historicalBalances.entries()) {
+        const accountType = accountTypeById.get(accountId);
+        const isLiability =
+          accountType === "credit_card" || accountType === "loan";
+
+        if (isLiability) {
+          liabilities += Math.abs(balance);
+        } else {
+          assets += balance;
+        }
+      }
+
+      return {
+        date,
+        assets,
+        liabilities,
+        netWorth: assets - liabilities,
+      };
+    }
+  );
+
   const metrics = [
     {
       label: "Monthly income",
@@ -223,6 +284,20 @@ export default async function DashboardPage() {
             </Card>
           ))}
         </section>
+
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>Net worth history</CardTitle>
+            <CardDescription>
+              Historical MXN assets, liabilities, and net worth based on balance
+              snapshots.
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent>
+            <NetWorthChart data={netWorthHistory} />
+          </CardContent>
+        </Card>
 
         <Card className="mt-8">
           <CardHeader className="flex flex-row items-start justify-between gap-4">
