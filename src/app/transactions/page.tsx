@@ -2,6 +2,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { TransactionForm } from "@/components/transactions/transaction-form";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -33,37 +34,43 @@ export default async function TransactionsPage({
     redirect("/login");
   }
 
-  const [{ data: accounts }, { data: categories }, { data: transactions }] =
-    await Promise.all([
-      supabase
-        .from("accounts")
-        .select("id, name, currency, is_active")
-        .eq("is_active", true)
-        .order("name"),
-      supabase
-        .from("categories")
-        .select("id, name, type")
-        .order("type")
-        .order("name"),
-      supabase
-        .from("transactions")
-        .select(
-          `
-          id,
-          date,
-          description,
-          merchant,
-          amount,
-          currency,
-          transaction_type,
-          accounts(name),
-          categories(name)
+  const [
+    { data: accounts },
+    { data: categories },
+    { data: transactions },
+  ] = await Promise.all([
+    supabase
+      .from("accounts")
+      .select("id, name, currency, is_active")
+      .eq("is_active", true)
+      .order("name"),
+
+    supabase
+      .from("categories")
+      .select("id, name, type")
+      .order("type")
+      .order("name"),
+
+    supabase
+      .from("transactions")
+      .select(
         `
-        )
-        .order("date", { ascending: false })
-        .order("created_at", { ascending: false })
-        .limit(20),
-    ]);
+        id,
+        date,
+        description,
+        merchant,
+        amount,
+        currency,
+        transaction_type,
+        transfer_group_id,
+        accounts(name),
+        categories(name)
+      `
+      )
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(20),
+  ]);
 
   async function createTransaction(formData: FormData) {
     "use server";
@@ -79,6 +86,9 @@ export default async function TransactionsPage({
     }
 
     const accountId = String(formData.get("account_id") ?? "");
+    const destinationAccountId = String(
+      formData.get("destination_account_id") ?? ""
+    );
     const categoryId = String(formData.get("category_id") ?? "");
     const date = String(formData.get("date") ?? "");
     const description = String(formData.get("description") ?? "").trim();
@@ -95,24 +105,52 @@ export default async function TransactionsPage({
       redirect("/transactions?error=Amount must be greater than zero");
     }
 
-    const normalizedAmount =
-      transactionType === "expense" ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+    if (transactionType === "transfer") {
+      if (!destinationAccountId) {
+        redirect("/transactions?error=Destination account is required");
+      }
 
-    const { error } = await supabase.from("transactions").insert({
-      user_id: user.id,
-      account_id: accountId,
-      category_id: categoryId || null,
-      date,
-      description,
-      merchant: merchant || null,
-      amount: normalizedAmount,
-      currency,
-      transaction_type: transactionType,
-      source: "manual",
-    });
+      if (accountId === destinationAccountId) {
+        redirect(
+          "/transactions?error=Source and destination accounts must be different"
+        );
+      }
 
-    if (error) {
-      redirect(`/transactions?error=${encodeURIComponent(error.message)}`);
+      const { error } = await supabase.rpc("create_account_transfer", {
+        p_source_account_id: accountId,
+        p_destination_account_id: destinationAccountId,
+        p_date: date,
+        p_description: description,
+        p_amount: rawAmount,
+        p_currency: currency,
+        p_notes: null,
+      });
+
+      if (error) {
+        redirect(`/transactions?error=${encodeURIComponent(error.message)}`);
+      }
+    } else {
+      const normalizedAmount =
+        transactionType === "expense"
+          ? -Math.abs(rawAmount)
+          : Math.abs(rawAmount);
+
+      const { error } = await supabase.from("transactions").insert({
+        user_id: user.id,
+        account_id: accountId,
+        category_id: categoryId || null,
+        date,
+        description,
+        merchant: merchant || null,
+        amount: normalizedAmount,
+        currency,
+        transaction_type: transactionType,
+        source: "manual",
+      });
+
+      if (error) {
+        redirect(`/transactions?error=${encodeURIComponent(error.message)}`);
+      }
     }
 
     revalidatePath("/transactions");
@@ -139,11 +177,32 @@ export default async function TransactionsPage({
       redirect("/transactions?error=Transaction ID is required");
     }
 
-    const { error } = await supabase
+    const { data: transaction, error: lookupError } = await supabase
       .from("transactions")
-      .delete()
+      .select("transfer_group_id")
       .eq("id", transactionId)
-      .eq("user_id", user.id);
+      .eq("user_id", user.id)
+      .single();
+
+    if (lookupError) {
+      redirect(
+        `/transactions?error=${encodeURIComponent(lookupError.message)}`
+      );
+    }
+
+    const deleteQuery = transaction.transfer_group_id
+      ? supabase
+          .from("transactions")
+          .delete()
+          .eq("transfer_group_id", transaction.transfer_group_id)
+          .eq("user_id", user.id)
+      : supabase
+          .from("transactions")
+          .delete()
+          .eq("id", transactionId)
+          .eq("user_id", user.id);
+
+    const { error } = await deleteQuery;
 
     if (error) {
       redirect(`/transactions?error=${encodeURIComponent(error.message)}`);
@@ -154,8 +213,8 @@ export default async function TransactionsPage({
     redirect("/transactions");
   }
 
-  const hasAccounts = accounts && accounts.length > 0;
-  const hasCategories = categories && categories.length > 0;
+  const activeAccounts = accounts ?? [];
+  const userCategories = categories ?? [];
 
   return (
     <main className="min-h-screen bg-muted/30">
@@ -169,7 +228,7 @@ export default async function TransactionsPage({
               Transactions
             </h1>
             <p className="mt-2 text-muted-foreground">
-              Record and review income and expenses.
+              Record income, expenses, and transfers.
             </p>
           </div>
 
@@ -192,15 +251,9 @@ export default async function TransactionsPage({
           </div>
         ) : null}
 
-        {!hasAccounts ? (
+        {activeAccounts.length === 0 ? (
           <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Create at least one active account before adding transactions.
-          </div>
-        ) : null}
-
-        {!hasCategories ? (
-          <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Create at least one category before adding transactions.
           </div>
         ) : null}
 
@@ -209,149 +262,16 @@ export default async function TransactionsPage({
             <CardHeader>
               <CardTitle>Add transaction</CardTitle>
               <CardDescription>
-                Expenses are stored as negative amounts. Income is stored as
-                positive amounts.
+                Transfers create one debit and one matching credit.
               </CardDescription>
             </CardHeader>
 
             <CardContent>
-              <form action={createTransaction} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="account_id">
-                    Account
-                  </label>
-                  <select
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    disabled={!hasAccounts}
-                    id="account_id"
-                    name="account_id"
-                    required
-                  >
-                    <option value="">Select account</option>
-                    {accounts?.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium"
-                    htmlFor="transaction_type"
-                  >
-                    Type
-                  </label>
-                  <select
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    id="transaction_type"
-                    name="transaction_type"
-                    required
-                  >
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                    <option value="transfer">Transfer</option>
-                  </select>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="category_id">
-                    Category
-                  </label>
-                  <select
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    disabled={!hasCategories}
-                    id="category_id"
-                    name="category_id"
-                  >
-                    <option value="">No category</option>
-                    {categories?.map((category) => (
-                      <option key={category.id} value={category.id}>
-                        {category.name} ({category.type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="date">
-                    Date
-                  </label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    id="date"
-                    name="date"
-                    required
-                    type="date"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="description">
-                    Description
-                  </label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    id="description"
-                    name="description"
-                    placeholder="e.g. Dinner"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="merchant">
-                    Merchant
-                  </label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    id="merchant"
-                    name="merchant"
-                    placeholder="e.g. Restaurant"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="amount">
-                    Amount
-                  </label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    id="amount"
-                    min="0.01"
-                    name="amount"
-                    required
-                    step="0.01"
-                    type="number"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="currency">
-                    Currency
-                  </label>
-                  <select
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                    defaultValue="MXN"
-                    id="currency"
-                    name="currency"
-                    required
-                  >
-                    <option value="MXN">MXN</option>
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                  </select>
-                </div>
-
-                <Button
-                  className="w-full"
-                  disabled={!hasAccounts}
-                  type="submit"
-                >
-                  Add transaction
-                </Button>
-              </form>
+              <TransactionForm
+                accounts={activeAccounts}
+                action={createTransaction}
+                categories={userCategories}
+              />
             </CardContent>
           </Card>
 
@@ -359,7 +279,7 @@ export default async function TransactionsPage({
             <CardHeader>
               <CardTitle>Recent transactions</CardTitle>
               <CardDescription>
-                Your 20 most recent transactions.
+                Your 20 most recent transaction entries.
               </CardDescription>
             </CardHeader>
 
@@ -379,6 +299,9 @@ export default async function TransactionsPage({
                       ? transaction.categories[0]
                       : transaction.categories;
 
+                    const isTransfer =
+                      transaction.transaction_type === "transfer";
+
                     return (
                       <div
                         className="flex items-center justify-between rounded-lg border p-4"
@@ -391,7 +314,9 @@ export default async function TransactionsPage({
                           <p className="text-sm text-muted-foreground">
                             {transaction.date} ·{" "}
                             {account?.name ?? "Unknown account"} ·{" "}
-                            {category?.name ?? "Uncategorized"}
+                            {isTransfer
+                              ? "Transfer"
+                              : category?.name ?? "Uncategorized"}
                           </p>
                         </div>
 
@@ -409,11 +334,15 @@ export default async function TransactionsPage({
                             }).format(Number(transaction.amount))}
                           </p>
 
-                          <Button asChild size="sm" variant="outline">
-                            <Link href={`/transactions/${transaction.id}/edit`}>
-                              Edit
-                            </Link>
-                          </Button>
+                          {!isTransfer ? (
+                            <Button asChild size="sm" variant="outline">
+                              <Link
+                                href={`/transactions/${transaction.id}/edit`}
+                              >
+                                Edit
+                              </Link>
+                            </Button>
+                          ) : null}
 
                           <form action={deleteTransaction}>
                             <input
@@ -421,7 +350,11 @@ export default async function TransactionsPage({
                               type="hidden"
                               value={transaction.id}
                             />
-                            <Button size="sm" type="submit" variant="destructive">
+                            <Button
+                              size="sm"
+                              type="submit"
+                              variant="destructive"
+                            >
                               Delete
                             </Button>
                           </form>

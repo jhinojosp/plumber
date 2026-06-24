@@ -45,6 +45,7 @@ export default async function DashboardPage() {
     supabase
       .from("transactions")
       .select("amount, transaction_type, currency")
+      .neq("transaction_type", "transfer")
       .gte("date", monthStart)
       .eq("currency", "MXN"),
 
