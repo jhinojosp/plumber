@@ -201,6 +201,102 @@ function getDateValue(row: CsvRow) {
   return matchingEntry?.[1] ?? null;
 }
 
+function normalizeMatchValue(value: unknown) {
+  return stringValue(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type CategoryRule = {
+  category_id: string;
+  match_field: "merchant" | "description";
+  match_type: "exact" | "contains";
+  match_value: string;
+  priority: number;
+};
+
+type CategorizedTransaction = {
+  category_id: string | null;
+  description: string | null;
+  merchant: string | null;
+};
+
+function findCategorySuggestion(values: {
+  description: string;
+  merchant: string;
+  rules: CategoryRule[];
+  history: CategorizedTransaction[];
+}) {
+  const normalizedDescription = normalizeMatchValue(values.description);
+  const normalizedMerchant = normalizeMatchValue(values.merchant);
+
+  for (const rule of values.rules) {
+    const candidate =
+      rule.match_field === "merchant"
+        ? normalizedMerchant
+        : normalizedDescription;
+
+    const ruleValue = normalizeMatchValue(rule.match_value);
+
+    if (!candidate || !ruleValue) {
+      continue;
+    }
+
+    const matches =
+      rule.match_type === "exact"
+        ? candidate === ruleValue
+        : candidate.includes(ruleValue);
+
+    if (matches) {
+      return {
+        categoryId: rule.category_id,
+        categorySource: "rule" as const,
+      };
+    }
+  }
+
+  for (const transaction of values.history) {
+    if (!transaction.category_id) {
+      continue;
+    }
+
+    const historicalMerchant = normalizeMatchValue(transaction.merchant);
+    const historicalDescription = normalizeMatchValue(
+      transaction.description
+    );
+
+    if (
+      normalizedMerchant &&
+      historicalMerchant &&
+      normalizedMerchant === historicalMerchant
+    ) {
+      return {
+        categoryId: transaction.category_id,
+        categorySource: "history" as const,
+      };
+    }
+
+    if (
+      normalizedDescription &&
+      historicalDescription &&
+      normalizedDescription === historicalDescription
+    ) {
+      return {
+        categoryId: transaction.category_id,
+        categorySource: "history" as const,
+      };
+    }
+  }
+
+  return {
+    categoryId: null,
+    categorySource: null,
+  };
+}
+
 function createFingerprint(values: {
   accountId: string;
   date: string;
@@ -322,6 +418,43 @@ export default async function ImportsPage({
       );
     }
 
+    const [
+      { data: categoryRules, error: categoryRulesError },
+      { data: categorizedHistory, error: categorizedHistoryError },
+    ] = await Promise.all([
+      supabase
+        .from("category_rules")
+        .select(
+          "category_id, match_field, match_type, match_value, priority"
+        )
+        .eq("user_id", user.id)
+        .eq("is_active", true)
+        .order("priority", { ascending: true })
+        .order("created_at", { ascending: true }),
+
+      supabase
+        .from("transactions")
+        .select("category_id, description, merchant")
+        .eq("user_id", user.id)
+        .not("category_id", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1000),
+    ]);
+
+    if (categoryRulesError || categorizedHistoryError) {
+      redirect(
+        `/imports?error=${encodeURIComponent(
+          categoryRulesError?.message ??
+            categorizedHistoryError?.message ??
+            "Could not load category suggestions"
+        )}`
+      );
+    }
+
+    const rules = (categoryRules ?? []) as CategoryRule[];
+    const history =
+      (categorizedHistory ?? []) as CategorizedTransaction[];
+
     const normalizedRows = parsedRows.map((row, index) => {
       const date = parseDate(row[mapping.date]);
 
@@ -368,6 +501,13 @@ export default async function ImportsPage({
             })
           : null;
 
+      const categorySuggestion = findCategorySuggestion({
+        description,
+        merchant,
+        rules,
+        history,
+      });
+
       return {
         rowNumber: index + 2,
         date,
@@ -376,6 +516,8 @@ export default async function ImportsPage({
         amount,
         currency: currency.toUpperCase(),
         fingerprint,
+        categoryId: categorySuggestion.categoryId,
+        categorySource: categorySuggestion.categorySource,
         rawData: row,
         errorMessage:
           errorMessages.length > 0 ? errorMessages.join("; ") : null,
@@ -497,6 +639,8 @@ export default async function ImportsPage({
       amount: row.amount,
       currency: row.currency,
       fingerprint: row.fingerprint,
+      category_id: row.categoryId,
+      category_source: row.categorySource,
       raw_data: row.rawData,
       status: row.status,
       error_message: row.errorMessage,

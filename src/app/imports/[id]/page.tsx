@@ -49,6 +49,7 @@ export default async function ImportReviewPage({
   const [
     { data: batch, error: batchError },
     { data: rows, error: rowsError },
+    { data: categories, error: categoriesError },
   ] = await Promise.all([
     supabase
       .from("import_batches")
@@ -62,11 +63,18 @@ export default async function ImportReviewPage({
     supabase
       .from("transaction_import_rows")
       .select(
-        "id, row_number, transaction_date, description, merchant, amount, currency, status, error_message"
+        "id, row_number, transaction_date, description, merchant, amount, currency, status, error_message, category_id, category_source"
       )
       .eq("batch_id", id)
       .eq("user_id", user.id)
       .order("row_number"),
+
+    supabase
+      .from("categories")
+      .select("id, name, type")
+      .in("type", ["expense", "income"])
+      .order("type")
+      .order("name"),
   ]);
 
   if (batchError || !batch) {
@@ -147,6 +155,137 @@ export default async function ImportReviewPage({
     redirect(`/imports/${id}`);
   }
 
+  async function updateRowCategory(formData: FormData) {
+    "use server";
+
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect("/login");
+    }
+
+    const rowId = String(formData.get("row_id") ?? "");
+    const categoryId = String(formData.get("category_id") ?? "");
+    const saveRule = String(formData.get("save_rule") ?? "") === "on";
+    const matchField = String(formData.get("match_field") ?? "merchant");
+    const matchType = String(formData.get("match_type") ?? "contains");
+
+    if (!rowId) {
+      redirect(`/imports/${id}?error=Import row ID is required`);
+    }
+
+    if (
+      matchField !== "merchant" &&
+      matchField !== "description"
+    ) {
+      redirect(`/imports/${id}?error=Invalid rule field`);
+    }
+
+    if (matchType !== "exact" && matchType !== "contains") {
+      redirect(`/imports/${id}?error=Invalid rule type`);
+    }
+
+    if (categoryId) {
+      const { data: category, error: categoryError } = await supabase
+        .from("categories")
+        .select("id")
+        .eq("id", categoryId)
+        .eq("user_id", user.id)
+        .single();
+
+      if (categoryError || !category) {
+        redirect(`/imports/${id}?error=Category not found`);
+      }
+    }
+
+    const { data: row, error: rowError } = await supabase
+      .from("transaction_import_rows")
+      .select("id, merchant, description")
+      .eq("id", rowId)
+      .eq("batch_id", id)
+      .eq("user_id", user.id)
+      .single();
+
+    if (rowError || !row) {
+      redirect(`/imports/${id}?error=Import row not found`);
+    }
+
+    const { error: updateError } = await supabase
+      .from("transaction_import_rows")
+      .update({
+        category_id: categoryId || null,
+        category_source: categoryId ? "manual" : null,
+      })
+      .eq("id", rowId)
+      .eq("batch_id", id)
+      .eq("user_id", user.id);
+
+    if (updateError) {
+      redirect(
+        `/imports/${id}?error=${encodeURIComponent(updateError.message)}`
+      );
+    }
+
+    if (saveRule && categoryId) {
+      const rawMatchValue =
+        matchField === "merchant"
+          ? String(row.merchant ?? "").trim()
+          : String(row.description ?? "").trim();
+
+      if (!rawMatchValue) {
+        redirect(
+          `/imports/${id}?error=${encodeURIComponent(
+            `Cannot save a ${matchField} rule because the field is empty`
+          )}`
+        );
+      }
+
+      const normalizedMatchValue = rawMatchValue
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const { error: ruleError } = await supabase
+        .from("category_rules")
+        .upsert(
+          {
+            user_id: user.id,
+            category_id: categoryId,
+            match_field: matchField,
+            match_type: matchType,
+            match_value: normalizedMatchValue,
+            priority: 100,
+            is_active: true,
+          },
+          {
+            onConflict:
+              "user_id,match_field,match_type,match_value",
+          }
+        );
+
+      if (ruleError) {
+        redirect(
+          `/imports/${id}?error=${encodeURIComponent(ruleError.message)}`
+        );
+      }
+    }
+
+    revalidatePath(`/imports/${id}`);
+    redirect(
+      `/imports/${id}?success=${encodeURIComponent(
+        saveRule && categoryId
+          ? "Category updated and reusable rule saved"
+          : "Category updated"
+      )}`
+    );
+  }
+
   async function importReadyRows() {
     "use server";
 
@@ -178,7 +317,7 @@ export default async function ImportReviewPage({
     const { data: readyRows, error: readyRowsError } = await supabase
       .from("transaction_import_rows")
       .select(
-        "id, transaction_date, description, merchant, amount, currency"
+        "id, transaction_date, description, merchant, amount, currency, category_id"
       )
       .eq("batch_id", id)
       .eq("user_id", user.id)
@@ -200,7 +339,7 @@ export default async function ImportReviewPage({
     const transactionsToInsert = readyRows.map((row) => ({
       user_id: user.id,
       account_id: importBatch.account_id,
-      category_id: null,
+      category_id: row.category_id || null,
       date: row.transaction_date,
       description: row.description || row.merchant || "Imported transaction",
       merchant: row.merchant || null,
@@ -268,7 +407,7 @@ export default async function ImportReviewPage({
     );
   }
 
-  const dataError = rowsError;
+  const dataError = rowsError || categoriesError;
 
   return (
     <main className="min-h-screen bg-muted/30">
@@ -399,6 +538,7 @@ export default async function ImportReviewPage({
                       <th className="px-3 py-2 text-left">Description</th>
                       <th className="px-3 py-2 text-left">Merchant</th>
                       <th className="px-3 py-2 text-right">Amount</th>
+                      <th className="px-3 py-2 text-left">Category</th>
                       <th className="px-3 py-2 text-left">Status</th>
                       <th className="px-3 py-2 text-left">Action</th>
                     </tr>
@@ -425,6 +565,99 @@ export default async function ImportReviewPage({
                                 row.currency || "MXN"
                               )}
                         </td>
+                        <td className="min-w-80 px-3 py-2">
+                          {row.status === "ready" ||
+                          row.status === "excluded" ? (
+                            <form
+                              action={updateRowCategory}
+                              className="space-y-2"
+                            >
+                              <input
+                                name="row_id"
+                                type="hidden"
+                                value={row.id}
+                              />
+
+                              <select
+                                className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                                defaultValue={row.category_id ?? ""}
+                                name="category_id"
+                              >
+                                <option value="">Uncategorized</option>
+
+                                {(categories ?? [])
+                                  .filter((category) =>
+                                    Number(row.amount) < 0
+                                      ? category.type === "expense"
+                                      : category.type === "income"
+                                  )
+                                  .map((category) => (
+                                    <option
+                                      key={category.id}
+                                      value={category.id}
+                                    >
+                                      {category.name}
+                                    </option>
+                                  ))}
+                              </select>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  className="rounded-md border bg-background px-2 py-1 text-xs"
+                                  defaultValue={
+                                    row.merchant ? "merchant" : "description"
+                                  }
+                                  name="match_field"
+                                >
+                                  <option value="merchant">Merchant</option>
+                                  <option value="description">
+                                    Description
+                                  </option>
+                                </select>
+
+                                <select
+                                  className="rounded-md border bg-background px-2 py-1 text-xs"
+                                  defaultValue="contains"
+                                  name="match_type"
+                                >
+                                  <option value="contains">Contains</option>
+                                  <option value="exact">Exact</option>
+                                </select>
+
+                                <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                                  <input name="save_rule" type="checkbox" />
+                                  Save rule
+                                </label>
+
+                                <Button size="sm" type="submit">
+                                  Save category
+                                </Button>
+                              </div>
+
+                              {row.category_source ? (
+                                <p className="text-xs capitalize text-muted-foreground">
+                                  Suggested by: {row.category_source}
+                                </p>
+                              ) : null}
+                            </form>
+                          ) : (
+                            <div>
+                              <p className="text-sm">
+                                {(categories ?? []).find(
+                                  (category) =>
+                                    category.id === row.category_id
+                                )?.name ?? "Uncategorized"}
+                              </p>
+
+                              {row.category_source ? (
+                                <p className="text-xs capitalize text-muted-foreground">
+                                  Source: {row.category_source}
+                                </p>
+                              ) : null}
+                            </div>
+                          )}
+                        </td>
+
                         <td className="px-3 py-2">
                           <span className="rounded-full bg-muted px-2 py-1 text-xs font-medium capitalize">
                             {row.status}
