@@ -50,6 +50,8 @@ export default async function EditAccountPage({
     notFound();
   }
 
+  const isAccountActive = account.is_active;
+
   async function updateAccount(formData: FormData) {
     "use server";
 
@@ -117,7 +119,7 @@ export default async function EditAccountPage({
     const { error } = await supabase
       .from("accounts")
       .update({
-        is_active: !account.is_active,
+        is_active: !isAccountActive,
       })
       .eq("id", id)
       .eq("user_id", user.id);
