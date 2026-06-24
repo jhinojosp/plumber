@@ -120,6 +120,40 @@ export default async function TransactionsPage({
     redirect("/transactions");
   }
 
+  async function deleteTransaction(formData: FormData) {
+    "use server";
+
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect("/login");
+    }
+
+    const transactionId = String(formData.get("transaction_id") ?? "");
+
+    if (!transactionId) {
+      redirect("/transactions?error=Transaction ID is required");
+    }
+
+    const { error } = await supabase
+      .from("transactions")
+      .delete()
+      .eq("id", transactionId)
+      .eq("user_id", user.id);
+
+    if (error) {
+      redirect(`/transactions?error=${encodeURIComponent(error.message)}`);
+    }
+
+    revalidatePath("/transactions");
+    revalidatePath("/dashboard");
+    redirect("/transactions");
+  }
+
   const hasAccounts = accounts && accounts.length > 0;
   const hasCategories = categories && categories.length > 0;
 
@@ -361,18 +395,31 @@ export default async function TransactionsPage({
                           </p>
                         </div>
 
-                        <p
-                          className={
-                            Number(transaction.amount) < 0
-                              ? "font-medium text-red-600"
-                              : "font-medium text-emerald-600"
-                          }
-                        >
-                          {new Intl.NumberFormat("es-MX", {
-                            style: "currency",
-                            currency: transaction.currency,
-                          }).format(Number(transaction.amount))}
-                        </p>
+                        <div className="flex items-center gap-3">
+                          <p
+                            className={
+                              Number(transaction.amount) < 0
+                                ? "font-medium text-red-600"
+                                : "font-medium text-emerald-600"
+                            }
+                          >
+                            {new Intl.NumberFormat("es-MX", {
+                              style: "currency",
+                              currency: transaction.currency,
+                            }).format(Number(transaction.amount))}
+                          </p>
+
+                          <form action={deleteTransaction}>
+                            <input
+                              name="transaction_id"
+                              type="hidden"
+                              value={transaction.id}
+                            />
+                            <Button size="sm" type="submit" variant="destructive">
+                              Delete
+                            </Button>
+                          </form>
+                        </div>
                       </div>
                     );
                   })}
