@@ -18,12 +18,120 @@ type CsvImportFormProps = {
   action: (formData: FormData) => void | Promise<void>;
 };
 
+type MappingField =
+  | "date"
+  | "description"
+  | "merchant"
+  | "amount"
+  | "debit"
+  | "credit"
+  | "currency";
+
+type ColumnMapping = Record<MappingField, string>;
+
+const emptyMapping: ColumnMapping = {
+  date: "",
+  description: "",
+  merchant: "",
+  amount: "",
+  debit: "",
+  credit: "",
+  currency: "",
+};
+
+const fieldLabels: Record<MappingField, string> = {
+  date: "Date",
+  description: "Description",
+  merchant: "Merchant",
+  amount: "Amount",
+  debit: "Debit / Charge",
+  credit: "Credit / Deposit",
+  currency: "Currency",
+};
+
 function normalizeHeader(value: string) {
   return value
     .trim()
     .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, "_")
     .replace(/[^\w]/g, "");
+}
+
+function findHeader(
+  headers: string[],
+  candidates: string[]
+) {
+  return (
+    headers.find((header) =>
+      candidates.includes(header.toLowerCase())
+    ) ??
+    headers.find((header) =>
+      candidates.some((candidate) =>
+        header.toLowerCase().includes(candidate)
+      )
+    ) ??
+    ""
+  );
+}
+
+function suggestMapping(headers: string[]): ColumnMapping {
+  return {
+    date: findHeader(headers, [
+      "date",
+      "fecha",
+      "transaction_date",
+      "posting_date",
+      "posted_date",
+      "fecha_operacion",
+      "fecha_movimiento",
+    ]),
+    description: findHeader(headers, [
+      "description",
+      "descripcion",
+      "concept",
+      "concepto",
+      "details",
+      "detalle",
+      "memo",
+      "movimiento",
+    ]),
+    merchant: findHeader(headers, [
+      "merchant",
+      "comercio",
+      "payee",
+      "beneficiary",
+      "beneficiario",
+      "establishment",
+      "establecimiento",
+    ]),
+    amount: findHeader(headers, [
+      "amount",
+      "importe",
+      "monto",
+      "total",
+    ]),
+    debit: findHeader(headers, [
+      "debit",
+      "cargo",
+      "cargos",
+      "withdrawal",
+      "retiro",
+    ]),
+    credit: findHeader(headers, [
+      "credit",
+      "abono",
+      "abonos",
+      "deposit",
+      "deposito",
+    ]),
+    currency: findHeader(headers, [
+      "currency",
+      "moneda",
+      "divisa",
+    ]),
+  };
 }
 
 export function CsvImportForm({
@@ -33,13 +141,35 @@ export function CsvImportForm({
   const [fileName, setFileName] = useState("");
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] =
+    useState<ColumnMapping>(emptyMapping);
   const [parseError, setParseError] = useState("");
 
   const previewRows = useMemo(() => rows.slice(0, 10), [rows]);
 
+  const mappingIsValid =
+    Boolean(mapping.date) &&
+    Boolean(mapping.description || mapping.merchant) &&
+    Boolean(
+      mapping.amount ||
+        mapping.debit ||
+        mapping.credit
+    );
+
+  function updateMapping(
+    field: MappingField,
+    value: string
+  ) {
+    setMapping((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  }
+
   function handleFile(file: File | undefined) {
     setRows([]);
     setHeaders([]);
+    setMapping(emptyMapping);
     setParseError("");
     setFileName(file?.name ?? "");
 
@@ -56,13 +186,18 @@ export function CsvImportForm({
           setParseError(
             result.errors
               .slice(0, 3)
-              .map((error) => `Row ${error.row ?? "unknown"}: ${error.message}`)
+              .map(
+                (error) =>
+                  `Row ${error.row ?? "unknown"}: ${error.message}`
+              )
               .join(" | ")
           );
         }
 
         const parsedRows = result.data.filter((row) =>
-          Object.values(row).some((value) => String(value ?? "").trim() !== "")
+          Object.values(row).some(
+            (value) => String(value ?? "").trim() !== ""
+          )
         );
 
         const detectedHeaders =
@@ -71,6 +206,7 @@ export function CsvImportForm({
 
         setRows(parsedRows);
         setHeaders(detectedHeaders);
+        setMapping(suggestMapping(detectedHeaders));
       },
       error: (error) => {
         setParseError(error.message);
@@ -82,9 +218,13 @@ export function CsvImportForm({
     <div className="space-y-6">
       <form action={action} className="space-y-4">
         <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="account_id">
+          <label
+            className="text-sm font-medium"
+            htmlFor="account_id"
+          >
             Destination account
           </label>
+
           <select
             className="w-full rounded-md border bg-background px-3 py-2 text-sm"
             id="account_id"
@@ -92,6 +232,7 @@ export function CsvImportForm({
             required
           >
             <option value="">Select account</option>
+
             {accounts.map((account) => (
               <option key={account.id} value={account.id}>
                 {account.name} ({account.currency})
@@ -101,14 +242,20 @@ export function CsvImportForm({
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="csv_file">
+          <label
+            className="text-sm font-medium"
+            htmlFor="csv_file"
+          >
             CSV file
           </label>
+
           <input
             accept=".csv,text/csv"
             className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
             id="csv_file"
-            onChange={(event) => handleFile(event.target.files?.[0])}
+            onChange={(event) =>
+              handleFile(event.target.files?.[0])
+            }
             type="file"
           />
         </div>
@@ -119,12 +266,81 @@ export function CsvImportForm({
           </div>
         ) : null}
 
-        <input name="file_name" type="hidden" value={fileName} />
-        <input name="rows_json" type="hidden" value={JSON.stringify(rows)} />
+        {headers.length > 0 ? (
+          <div className="space-y-3 rounded-lg border p-4">
+            <div>
+              <p className="font-medium">Column mapping</p>
+              <p className="text-sm text-muted-foreground">
+                Confirm which CSV column corresponds to each
+                standardized field.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {(
+                Object.keys(fieldLabels) as MappingField[]
+              ).map((field) => (
+                <div className="space-y-1" key={field}>
+                  <label
+                    className="text-sm font-medium"
+                    htmlFor={`mapping-${field}`}
+                  >
+                    {fieldLabels[field]}
+                  </label>
+
+                  <select
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                    id={`mapping-${field}`}
+                    onChange={(event) =>
+                      updateMapping(field, event.target.value)
+                    }
+                    value={mapping[field]}
+                  >
+                    <option value="">Not mapped</option>
+
+                    {headers.map((header) => (
+                      <option key={header} value={header}>
+                        {header}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Date is required. Description or merchant is
+              required. Use either Amount, or Debit and Credit
+              columns.
+            </p>
+          </div>
+        ) : null}
+
+        <input
+          name="file_name"
+          type="hidden"
+          value={fileName}
+        />
+
+        <input
+          name="rows_json"
+          type="hidden"
+          value={JSON.stringify(rows)}
+        />
+
+        <input
+          name="mapping_json"
+          type="hidden"
+          value={JSON.stringify(mapping)}
+        />
 
         <Button
           className="w-full"
-          disabled={accounts.length === 0 || rows.length === 0}
+          disabled={
+            accounts.length === 0 ||
+            rows.length === 0 ||
+            !mappingIsValid
+          }
           type="submit"
         >
           Create import batch
@@ -171,12 +387,6 @@ export function CsvImportForm({
               </tbody>
             </table>
           </div>
-
-          <p className="text-xs text-muted-foreground">
-            Expected column names include date, description, merchant, amount,
-            debit, credit, and currency. Column mapping will become configurable
-            in a later step.
-          </p>
         </div>
       ) : null}
     </div>

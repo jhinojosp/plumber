@@ -24,40 +24,70 @@ type ImportsPageProps = {
 
 type CsvRow = Record<string, unknown>;
 
+type ColumnMapping = {
+  date: string;
+  description: string;
+  merchant: string;
+  amount: string;
+  debit: string;
+  credit: string;
+  currency: string;
+};
+
 function stringValue(value: unknown) {
   return String(value ?? "").trim();
 }
 
-function parseAmount(row: CsvRow) {
-  const directAmount = stringValue(row.amount);
+function parseNumericValue(value: unknown) {
+  const raw = stringValue(value);
 
-  if (directAmount) {
-    const normalized = directAmount
-      .replace(/[$,\s]/g, "")
-      .replace(/[()]/g, "");
-
-    const value = Number(normalized);
-
-    if (!Number.isFinite(value)) {
-      return null;
-    }
-
-    return directAmount.includes("(") ? -Math.abs(value) : value;
+  if (!raw) {
+    return null;
   }
 
-  const debit = Number(
-    stringValue(row.debit).replace(/[$,\s]/g, "")
-  );
+  const isNegative =
+    raw.includes("(") ||
+    raw.trim().startsWith("-");
 
-  const credit = Number(
-    stringValue(row.credit).replace(/[$,\s]/g, "")
-  );
+  const normalized = raw
+    .replace(/[$€£,\s]/g, "")
+    .replace(/[()]/g, "");
 
-  if (Number.isFinite(debit) && debit !== 0) {
+  const parsed = Number(normalized);
+
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return isNegative ? -Math.abs(parsed) : parsed;
+}
+
+function parseAmount(
+  row: CsvRow,
+  mapping: ColumnMapping
+) {
+  const directAmount = mapping.amount
+    ? stringValue(row[mapping.amount])
+    : "";
+
+
+  if (directAmount) {
+    return parseNumericValue(directAmount);
+  }
+
+  const debit = mapping.debit
+    ? parseNumericValue(row[mapping.debit])
+    : null;
+
+  const credit = mapping.credit
+    ? parseNumericValue(row[mapping.credit])
+    : null;
+
+  if (debit !== null && debit !== 0) {
     return -Math.abs(debit);
   }
 
-  if (Number.isFinite(credit) && credit !== 0) {
+  if (credit !== null && credit !== 0) {
     return Math.abs(credit);
   }
 
@@ -241,9 +271,14 @@ export default async function ImportsPage({
     const accountId = String(formData.get("account_id") ?? "");
     const fileName = String(formData.get("file_name") ?? "").trim();
     const rowsJson = String(formData.get("rows_json") ?? "");
+    const mappingJson = String(
+      formData.get("mapping_json") ?? ""
+    );
 
-    if (!accountId || !fileName || !rowsJson) {
-      redirect("/imports?error=Account, file, and parsed rows are required");
+    if (!accountId || !fileName || !rowsJson || !mappingJson) {
+      redirect(
+        "/imports?error=Account, file, rows, and column mapping are required"
+      );
     }
 
     const { data: account, error: accountError } = await supabase
@@ -259,29 +294,53 @@ export default async function ImportsPage({
     }
 
     let parsedRows: CsvRow[];
+    let mapping: ColumnMapping;
 
     try {
       const parsed = JSON.parse(rowsJson);
+      const parsedMapping = JSON.parse(mappingJson);
 
       if (!Array.isArray(parsed)) {
         throw new Error("Rows payload must be an array");
       }
 
       parsedRows = parsed.slice(0, 2000);
+      mapping = parsedMapping as ColumnMapping;
     } catch {
-      redirect("/imports?error=Could not read the parsed CSV rows");
+      redirect(
+        "/imports?error=Could not read the parsed CSV rows or mapping"
+      );
+    }
+
+    if (
+      !mapping.date ||
+      (!mapping.description && !mapping.merchant) ||
+      (!mapping.amount && !mapping.debit && !mapping.credit)
+    ) {
+      redirect(
+        "/imports?error=Date, description or merchant, and amount fields must be mapped"
+      );
     }
 
     const normalizedRows = parsedRows.map((row, index) => {
-      const date = parseDate(getDateValue(row));
-      const description = stringValue(
-        row.description ?? row.concept ?? row.details ?? row.memo
-      );
-      const merchant = stringValue(
-        row.merchant ?? row.payee ?? row.establishment
-      );
-      const amount = parseAmount(row);
-      const currency = stringValue(row.currency) || account.currency || "MXN";
+      const date = parseDate(row[mapping.date]);
+
+      const description = mapping.description
+        ? stringValue(row[mapping.description])
+        : "";
+
+      const merchant = mapping.merchant
+        ? stringValue(row[mapping.merchant])
+        : "";
+
+      const amount = parseAmount(row, mapping);
+
+      const mappedCurrency = mapping.currency
+        ? stringValue(row[mapping.currency])
+        : "";
+
+      const currency =
+        mappedCurrency || account.currency || "MXN";
 
       const errorMessages: string[] = [];
 
