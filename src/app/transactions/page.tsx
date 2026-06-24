@@ -409,6 +409,12 @@ export default async function TransactionsPage({
                             }).format(Number(transaction.amount))}
                           </p>
 
+                          <Button asChild size="sm" variant="outline">
+                            <Link href={`/transactions/${transaction.id}/edit`}>
+                              Edit
+                            </Link>
+                          </Button>
+
                           <form action={deleteTransaction}>
                             <input
                               name="transaction_id"
