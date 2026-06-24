@@ -66,10 +66,50 @@ export default async function CategoriesPage({
     });
 
     if (error) {
+      const message =
+        error.code === "23505"
+          ? "A category with this name and type already exists"
+          : error.message;
+
+      redirect(`/categories?error=${encodeURIComponent(message)}`);
+    }
+
+    revalidatePath("/categories");
+    redirect("/categories");
+  }
+
+  async function deleteCategory(formData: FormData) {
+    "use server";
+
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect("/login");
+    }
+
+    const categoryId = String(formData.get("category_id") ?? "");
+
+    if (!categoryId) {
+      redirect("/categories?error=Category ID is required");
+    }
+
+    const { error } = await supabase
+      .from("categories")
+      .delete()
+      .eq("id", categoryId)
+      .eq("user_id", user.id);
+
+    if (error) {
       redirect(`/categories?error=${encodeURIComponent(error.message)}`);
     }
 
     revalidatePath("/categories");
+    revalidatePath("/transactions");
+    revalidatePath("/dashboard");
     redirect("/categories");
   }
 
@@ -183,6 +223,29 @@ export default async function CategoriesPage({
                         <p className="text-sm capitalize text-muted-foreground">
                           {category.type}
                         </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Button asChild size="sm" variant="outline">
+                          <Link href={`/categories/${category.id}/edit`}>
+                            Edit
+                          </Link>
+                        </Button>
+
+                        <form action={deleteCategory}>
+                          <input
+                            name="category_id"
+                            type="hidden"
+                            value={category.id}
+                          />
+                          <Button
+                            size="sm"
+                            type="submit"
+                            variant="destructive"
+                          >
+                            Delete
+                          </Button>
+                        </form>
                       </div>
                     </div>
                   ))}
