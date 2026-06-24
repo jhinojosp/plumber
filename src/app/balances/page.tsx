@@ -32,10 +32,16 @@ type BalanceSnapshot = {
   balance: number | string;
   currency: string;
   source: string;
-  accounts: {
-    name: string;
-    type: string;
-  } | null;
+  accounts:
+    | {
+        name: string;
+        type: string;
+      }
+    | {
+        name: string;
+        type: string;
+      }[]
+    | null;
 };
 
 function formatCurrency(value: number, currency: string) {
@@ -192,7 +198,11 @@ export default async function BalancesPage({
   const latestMxnNetWorth = Array.from(latestByAccount.values())
     .filter((snapshot) => snapshot.currency === "MXN")
     .reduce((total, snapshot) => {
-      const accountType = snapshot.accounts?.type;
+      const account = Array.isArray(snapshot.accounts)
+        ? snapshot.accounts[0]
+        : snapshot.accounts;
+
+      const accountType = account?.type;
       const value = Number(snapshot.balance);
       const isLiability =
         accountType === "credit_card" || accountType === "loan";
@@ -356,7 +366,9 @@ export default async function BalancesPage({
                     >
                       <div>
                         <p className="font-medium">
-                          {snapshot.accounts?.name ?? "Unknown account"}
+                          {(Array.isArray(snapshot.accounts)
+                            ? snapshot.accounts[0]?.name
+                            : snapshot.accounts?.name) ?? "Unknown account"}
                         </p>
                         <p className="text-sm text-muted-foreground">
                           {snapshot.date} · {snapshot.source}
