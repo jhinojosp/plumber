@@ -40,6 +40,7 @@ export default async function DashboardPage() {
     { data: monthlyTransactions, error: monthlyError },
     { data: allTransactions, error: allTransactionsError },
     { data: accounts, error: accountsError },
+    { data: balanceSnapshots, error: balancesError },
     { data: recentTransactions, error: recentError },
   ] = await Promise.all([
     supabase
@@ -51,14 +52,21 @@ export default async function DashboardPage() {
 
     supabase
       .from("transactions")
-      .select("amount, currency")
+      .select("account_id, amount, currency")
       .eq("currency", "MXN"),
 
     supabase
       .from("accounts")
-      .select("initial_balance, currency, is_active")
+      .select("id, name, type, initial_balance, currency, is_active")
       .eq("currency", "MXN")
       .eq("is_active", true),
+
+    supabase
+      .from("account_balances")
+      .select("account_id, date, balance, currency, created_at")
+      .eq("currency", "MXN")
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false }),
 
     supabase
       .from("transactions")
@@ -79,7 +87,11 @@ export default async function DashboardPage() {
   ]);
 
   const dataError =
-    monthlyError || allTransactionsError || accountsError || recentError;
+    monthlyError ||
+    allTransactionsError ||
+    accountsError ||
+    balancesError ||
+    recentError;
 
   const monthlyIncome =
     monthlyTransactions
@@ -99,19 +111,48 @@ export default async function DashboardPage() {
 
   const estimatedSavings = monthlyIncome - monthlyExpenses;
 
-  const initialBalances =
-    accounts?.reduce(
-      (total, account) => total + Number(account.initial_balance),
-      0
-    ) ?? 0;
+  const latestSnapshotByAccount = new Map<string, number>();
 
-  const transactionBalances =
-    allTransactions?.reduce(
-      (total, transaction) => total + Number(transaction.amount),
-      0
-    ) ?? 0;
+  for (const snapshot of balanceSnapshots ?? []) {
+    if (!latestSnapshotByAccount.has(snapshot.account_id)) {
+      latestSnapshotByAccount.set(
+        snapshot.account_id,
+        Number(snapshot.balance)
+      );
+    }
+  }
 
-  const provisionalNetWorth = initialBalances + transactionBalances;
+  const transactionsByAccount = new Map<string, number>();
+
+  for (const transaction of allTransactions ?? []) {
+    const current = transactionsByAccount.get(transaction.account_id) ?? 0;
+
+    transactionsByAccount.set(
+      transaction.account_id,
+      current + Number(transaction.amount)
+    );
+  }
+
+  const netWorth =
+    accounts?.reduce((total, account) => {
+      const latestSnapshot = latestSnapshotByAccount.get(account.id);
+
+      if (latestSnapshot !== undefined) {
+        const isLiability =
+          account.type === "credit_card" || account.type === "loan";
+
+        return (
+          total +
+          (isLiability ? -Math.abs(latestSnapshot) : latestSnapshot)
+        );
+      }
+
+      const fallbackBalance =
+        Number(account.initial_balance) +
+        (transactionsByAccount.get(account.id) ?? 0);
+
+      return total + fallbackBalance;
+    }, 0) ?? 0;
 
   const metrics = [
     {
@@ -128,7 +169,7 @@ export default async function DashboardPage() {
     },
     {
       label: "Net worth",
-      value: formatCurrency(provisionalNetWorth),
+      value: formatCurrency(netWorth),
     },
   ];
 
@@ -151,6 +192,9 @@ export default async function DashboardPage() {
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline">
               <Link href="/accounts">Accounts</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/balances">Balances</Link>
             </Button>
             <Button asChild variant="outline">
               <Link href="/categories">Categories</Link>
@@ -247,8 +291,8 @@ export default async function DashboardPage() {
         </Card>
 
         <p className="mt-4 text-xs text-muted-foreground">
-          Net worth is provisional: active MXN account opening balances plus all
-          recorded MXN transactions.
+          Net worth uses the latest balance snapshot for each account. Accounts
+          without snapshots use opening balance plus recorded transactions.
         </p>
       </div>
     </main>
