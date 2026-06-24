@@ -241,12 +241,25 @@ export default async function AccountsPage({
                         </p>
                       </div>
 
-                      <p className="font-medium">
-                        {new Intl.NumberFormat("es-MX", {
-                          style: "currency",
-                          currency: account.currency,
-                        }).format(Number(account.initial_balance))}
-                      </p>
+                      <div className="flex items-center gap-4">
+                        <div className="text-right">
+                          <p className="font-medium">
+                            {new Intl.NumberFormat("es-MX", {
+                              style: "currency",
+                              currency: account.currency,
+                            }).format(Number(account.initial_balance))}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {account.is_active ? "Active" : "Archived"}
+                          </p>
+                        </div>
+
+                        <Button asChild size="sm" variant="outline">
+                          <Link href={`/accounts/${account.id}/edit`}>
+                            Edit
+                          </Link>
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
