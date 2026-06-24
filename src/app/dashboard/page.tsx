@@ -44,6 +44,7 @@ export default async function DashboardPage() {
     { data: accounts, error: accountsError },
     { data: balanceSnapshots, error: balancesError },
     { data: recentTransactions, error: recentError },
+    { data: monthlyBudgets, error: budgetsError },
   ] = await Promise.all([
     supabase
       .from("transactions")
@@ -86,6 +87,12 @@ export default async function DashboardPage() {
       .order("date", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(5),
+
+    supabase
+      .from("budgets")
+      .select("amount, currency")
+      .eq("budget_month", monthStart)
+      .eq("currency", "MXN"),
   ]);
 
   const dataError =
@@ -93,7 +100,8 @@ export default async function DashboardPage() {
     allTransactionsError ||
     accountsError ||
     balancesError ||
-    recentError;
+    recentError ||
+    budgetsError;
 
   const monthlyIncome =
     monthlyTransactions
@@ -112,6 +120,19 @@ export default async function DashboardPage() {
       ) ?? 0;
 
   const estimatedSavings = monthlyIncome - monthlyExpenses;
+
+  const monthlyBudget =
+    monthlyBudgets?.reduce(
+      (total, budget) => total + Number(budget.amount),
+      0
+    ) ?? 0;
+
+  const budgetRemaining = monthlyBudget - monthlyExpenses;
+
+  const budgetUsage =
+    monthlyBudget > 0
+      ? Math.round((monthlyExpenses / monthlyBudget) * 100)
+      : 0;
 
   const latestSnapshotByAccount = new Map<string, number>();
 
@@ -284,6 +305,100 @@ export default async function DashboardPage() {
             </Card>
           ))}
         </section>
+
+        <Card className="mt-8">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle>Monthly budget</CardTitle>
+              <CardDescription>
+                Current-month expense budget performance.
+              </CardDescription>
+            </div>
+
+            <Button asChild size="sm" variant="outline">
+              <Link href="/budgets">Manage budgets</Link>
+            </Button>
+          </CardHeader>
+
+          <CardContent>
+            {monthlyBudget === 0 ? (
+              <div className="rounded-md border border-dashed p-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No budgets configured for this month.
+                </p>
+
+                <Button asChild className="mt-4" size="sm">
+                  <Link href="/budgets">Create budget</Link>
+                </Button>
+              </div>
+            ) : (
+              <div>
+                <div className="grid gap-4 md:grid-cols-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      Total budget
+                    </p>
+                    <p className="mt-1 text-xl font-semibold">
+                      {formatCurrency(monthlyBudget)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      Actual spending
+                    </p>
+                    <p className="mt-1 text-xl font-semibold">
+                      {formatCurrency(monthlyExpenses)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      Remaining
+                    </p>
+                    <p
+                      className={
+                        budgetRemaining < 0
+                          ? "mt-1 text-xl font-semibold text-red-600"
+                          : "mt-1 text-xl font-semibold"
+                      }
+                    >
+                      {formatCurrency(budgetRemaining)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      Budget used
+                    </p>
+                    <p
+                      className={
+                        budgetUsage > 100
+                          ? "mt-1 text-xl font-semibold text-red-600"
+                          : "mt-1 text-xl font-semibold"
+                      }
+                    >
+                      {budgetUsage}%
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={
+                      budgetUsage > 100
+                        ? "h-full rounded-full bg-red-600"
+                        : "h-full rounded-full bg-foreground"
+                    }
+                    style={{
+                      width: `${Math.min(budgetUsage, 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         <Card className="mt-8">
           <CardHeader>
