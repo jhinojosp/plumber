@@ -178,29 +178,6 @@ function parseDate(value: unknown) {
   return null;
 }
 
-function getDateValue(row: CsvRow) {
-  const directCandidates = [
-    row.date,
-    row.transaction_date,
-    row.fecha,
-    row.posted_date,
-    row.posting_date,
-    row.transactiondate,
-  ];
-
-  for (const candidate of directCandidates) {
-    if (stringValue(candidate)) {
-      return candidate;
-    }
-  }
-
-  const matchingEntry = Object.entries(row).find(([key]) =>
-    ["date", "fecha"].some((term) => key.toLowerCase().includes(term))
-  );
-
-  return matchingEntry?.[1] ?? null;
-}
-
 function normalizeMatchValue(value: unknown) {
   return stringValue(value)
     .toLowerCase()
@@ -571,7 +548,7 @@ export default async function ImportsPage({
 
     const preparedRows = normalizedRows.map((row) => {
       let status = "ready";
-      let errorMessage = row.errorMessage;
+      const errorMessage = row.errorMessage;
 
       if (errorMessage || !row.fingerprint) {
         status = "error";
